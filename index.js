@@ -2,33 +2,25 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 
 // ─────────────────────────────────────────────
-// BOT INITIALIZATION
+// INITIALIZATION
 // ─────────────────────────────────────────────
-const TOKEN = process.env.TOKEN;
+const TOKEN    = process.env.TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 
-if (!TOKEN) throw new Error("❌ TOKEN muhit o'zgaruvchisi topilmadi!");
+if (!TOKEN)    throw new Error("❌ TOKEN muhit o'zgaruvchisi topilmadi!");
 if (!ADMIN_ID) console.warn("⚠️  ADMIN_ID muhit o'zgaruvchisi topilmadi!");
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 // ─────────────────────────────────────────────
-// STATE MANAGEMENT
+// STATE
 // ─────────────────────────────────────────────
-// Bitta unified state ob'ekti
 const userState = {};
+const users     = new Set();
 
-function getState(chatId) {
-    return userState[chatId] || null;
-}
-
-function setState(chatId, data) {
-    userState[chatId] = data;
-}
-
-function clearState(chatId) {
-    delete userState[chatId];
-}
+function getState(chatId)      { return userState[chatId] || null; }
+function setState(chatId, val) { userState[chatId] = { ...(userState[chatId] || {}), ...val }; }
+function clearState(chatId)    { delete userState[chatId]; }
 
 // ─────────────────────────────────────────────
 // COMMANDS
@@ -38,12 +30,37 @@ bot.setMyCommands([
     { command: "help",  description: "Yordam" }
 ]).catch(err => console.error("setMyCommands xatosi:", err));
 
-
+// ─────────────────────────────────────────────
+// /start
+// ─────────────────────────────────────────────
 bot.onText(/\/start/, (msg) => {
-    clearState(msg.chat.id);
-    sendMainMenu(msg.chat.id, `Assalomu alaykum! ${msg.from.first_name} Oliy matematika botiga xush kelibsiz.\nQuyidagi amallardan birini tanlang:`);
+    const chatId = msg.chat.id;
+    clearState(chatId);
+    users.add(chatId);
+
+    if (String(chatId) === String(ADMIN_ID)) {
+        bot.sendMessage(chatId, `🔧 Assalomu alaykum, Admin!\nQuyidagi amallardan birini tanlang:`, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "👥 Foydalanuvchilar soni", callback_data: "user_count" },
+                        { text: "📢 Xabar yuborish",        callback_data: "broadcast"   }
+                    ],
+                    [{ text: "4 × 4", callback_data: "size_4" }],
+                    [{ text: "3 × 3", callback_data: "size_3" }]
+                ]
+            }
+        }).catch(e => console.error(e));
+    } else {
+        sendMainMenu(chatId,
+            `Assalomu alaykum! ${msg.from.first_name} Oliy matematika botiga xush kelibsiz.\nQuyidagi amallardan birini tanlang:`
+        );
+    }
 });
 
+// ─────────────────────────────────────────────
+// /help
+// ─────────────────────────────────────────────
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
     setState(chatId, { mode: "help" });
@@ -53,7 +70,157 @@ bot.onText(/\/help/, async (msg) => {
 });
 
 // ─────────────────────────────────────────────
-// MAIN MENU HELPER
+// CALLBACK QUERY — bitta handler
+// ─────────────────────────────────────────────
+bot.on("callback_query", async (q) => {
+    const chatId = q.message.chat.id;
+    await bot.answerCallbackQuery(q.id).catch(() => {});
+    const isAdmin = String(chatId) === String(ADMIN_ID);
+
+    // ── Admin maxsus tugmalar ──
+    if (isAdmin) {
+        if (q.data === "user_count") {
+            await bot.sendMessage(chatId, `👥 Foydalanuvchilar soni: ${users.size}`).catch(e => console.error(e));
+            return;
+        }
+        if (q.data === "broadcast") {
+            setState(chatId, { mode: "broadcast" });
+            await bot.sendMessage(chatId, "📩 Yuboriladigan xabar matnini kiriting:").catch(e => console.error(e));
+            return;
+        }
+    }
+
+    // ── Umumiy tugmalar ──
+    switch (q.data) {
+        case "back":
+            clearState(chatId);
+            if (isAdmin) {
+                bot.sendMessage(chatId, `🔧 Admin paneliga qaytdingiz:`, {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: "👥 Foydalanuvchilar soni", callback_data: "user_count" },
+                                { text: "📢 Xabar yuborish",        callback_data: "broadcast"   }
+                            ],
+                            [{ text: "4 × 4", callback_data: "size_4" }],
+                            [{ text: "3 × 3", callback_data: "size_3" }]
+                        ]
+                    }
+                }).catch(e => console.error(e));
+            } else {
+                sendMainMenu(chatId,
+                    "Assalomu alaykum! Oliy matematika botiga xush kelibsiz.\nQuyidagi amallardan birini tanlang:"
+                );
+            }
+            break;
+
+        case "size_3":
+            clearState(chatId);
+            setState(chatId, { size: 3 });
+            sendMethodMenu(chatId);
+            break;
+
+        case "size_4":
+            clearState(chatId);
+            setState(chatId, { size: 4 });
+            sendMethodMenu(chatId);
+            break;
+
+        case "gauss": {
+            const st = getState(chatId);
+            if (!st || !st.size) { sendMainMenu(chatId, "❌ Iltimos, avval o'lcham tanlang:"); return; }
+            setState(chatId, { method: "gauss", row: 0, matrix: [] });
+            askRow(chatId);
+            break;
+        }
+
+        case "cramer": {
+            const st = getState(chatId);
+            if (!st || !st.size) { sendMainMenu(chatId, "❌ Iltimos, avval o'lcham tanlang:"); return; }
+            setState(chatId, { method: "cramer", row: 0, matrix: [] });
+            askRow(chatId);
+            break;
+        }
+    }
+});
+
+// ─────────────────────────────────────────────
+// MESSAGE HANDLER — bitta unified handler
+// ─────────────────────────────────────────────
+bot.on("message", async (msg) => {
+    if (!msg.text)                return;
+    if (msg.text.startsWith("/")) return;
+
+    const chatId  = msg.chat.id;
+    const isAdmin = String(chatId) === String(ADMIN_ID);
+    users.add(chatId);
+    const st = getState(chatId);
+
+    // ── Admin broadcast ──
+    if (isAdmin && st && st.mode === "broadcast") {
+        clearState(chatId);
+        const text = msg.text;
+        let success = 0, fail = 0;
+
+        await Promise.allSettled([...users].map(async id => {
+            try {
+                await bot.sendMessage(id, `${text}`);
+                success++;
+            } catch { fail++; }
+        }));
+
+        await bot.sendMessage(chatId,
+            `✅ Xabar yuborildi!\n👥 Jami: ${users.size}\n✔️ Yetkazildi: ${success}\n❌ Xato: ${fail}`
+        ).catch(e => console.error(e));
+        return;
+    }
+
+    // ── /help yordam rejimi ──
+    if (st && st.mode === "help") {
+        clearState(chatId);
+        if (ADMIN_ID) {
+            await bot.sendMessage(ADMIN_ID,
+                `📩 Yangi yordam so'rovi:\n👤 Ism: ${msg.from.first_name}\n🔗 Username: ${msg.from.username ? "@" + msg.from.username : "yo'q"}\n🆔 Chat ID: ${chatId}\n💬 Xabar:\n${msg.text}`
+            ).catch(e => console.error("Admin xabari yuborishda xato:", e));
+        }
+        await bot.sendMessage(chatId, "✅ Xabaringiz adminga yuborildi!").catch(e => console.error(e));
+        return;
+    }
+
+    // ── Matritsa kiritish rejimi ──
+    if (!st || st.row === undefined || !st.size || !st.method) {
+        await bot.sendMessage(chatId,
+            "🤖 Botdan foydalanish uchun /start buyrug'ini bosing yoki quyidagi tugmani tanlang:",
+            { reply_markup: { inline_keyboard: [[{ text: "🚀 Boshlash", callback_data: "back" }]] } }
+        ).catch(e => console.error(e));
+        return;
+    }
+
+    const expectedCols = st.size + 1;
+    const parts = msg.text.split(",").map(v => Number(v.trim()));
+
+    if (parts.length !== expectedCols || parts.some(isNaN)) {
+        await bot.sendMessage(chatId,
+            `❌ Xato! ${expectedCols} ta sonni vergul bilan kiriting.\nMasalan: ${Array.from({ length: expectedCols }, (_, i) => i + 1).join(", ")}`
+        ).catch(e => console.error(e));
+        return;
+    }
+
+    st.matrix.push(parts);
+    st.row++;
+
+    if (st.row < st.size) {
+        askRow(chatId);
+    } else {
+        if (st.method === "gauss")
+            gaussSolveN(chatId);
+        else
+            solveCramerN(chatId, st.size === 3 ? det3WithSteps : det4WithSteps);
+    }
+});
+
+// ─────────────────────────────────────────────
+// UI HELPERS
 // ─────────────────────────────────────────────
 function sendMainMenu(chatId, text) {
     return bot.sendMessage(chatId, text, {
@@ -66,171 +233,32 @@ function sendMainMenu(chatId, text) {
     }).catch(e => console.error("sendMainMenu xatosi:", e));
 }
 
-// ─────────────────────────────────────────────
-// CALLBACK QUERY  (bitta handler – ikkilanish yo'q)
-// ─────────────────────────────────────────────
-bot.on("callback_query", async (q) => {
-    const chatId = q.message.chat.id;
-
-    // Tugmani "bosildi" deb belgilash
-    await bot.answerCallbackQuery(q.id).catch(() => {});
-
-    switch (q.data) {
-
-        // ── Orqaga ──
-        case "back":
-            clearState(chatId);
-            sendMainMenu(chatId,
-                "Assalomu alaykum! Oliy matematika botiga xush kelibsiz.\nQuyidagi amallardan birini tanlang:"
-            );
-            break;
-
-        // ── 3×3 o'lcham tanlash ──
-        case "size_3":
-            clearState(chatId);
-            bot.sendMessage(chatId, "🔢 Usulni tanlang:", {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "Gauss usuli",  callback_data: "gauss_3"  }],
-                        [{ text: "Kramel usuli", callback_data: "cramer_3" }],
-                        [{ text: "🔙 Orqaga",    callback_data: "back"     }]
-                    ]
-                }
-            }).catch(e => console.error(e));
-            break;
-
-        // ── 4×4 o'lcham tanlash ──
-        case "size_4":
-            clearState(chatId);
-            bot.sendMessage(chatId, "🔢 Usulni tanlang:", {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "Gauss usuli",  callback_data: "gauss_4"  }],
-                        [{ text: "Kramel usuli", callback_data: "cramer_4" }],
-                        [{ text: "🔙 Orqaga",    callback_data: "back"     }]
-                    ]
-                }
-            }).catch(e => console.error(e));
-            break;
-
-        // ── 3×3 Gauss ──
-        case "gauss_3":
-            setState(chatId, { size: 3, method: "gauss", row: 0, matrix: [] });
-            askRow(chatId);
-            break;
-
-        // ── 3×3 Cramer ──
-        case "cramer_3":
-            setState(chatId, { size: 3, method: "cramer", row: 0, matrix: [] });
-            askRow(chatId);
-            break;
-
-        // ── 4×4 Gauss ──
-        case "gauss_4":
-            setState(chatId, { size: 4, method: "gauss", row: 0, matrix: [] });
-            askRow(chatId);
-            break;
-
-        // ── 4×4 Cramer ──
-        case "cramer_4":
-            setState(chatId, { size: 4, method: "cramer", row: 0, matrix: [] });
-            askRow(chatId);
-            break;
-    }
-});
-
-// ─────────────────────────────────────────────
-// MESSAGE HANDLER  (bitta unified handler)
-// ─────────────────────────────────────────────
-bot.on("message", async (msg) => {
-    if (!msg.text) return;                     // media/sticker ni e'tiborsiz qoldir
-    if (msg.text.startsWith("/")) return;       // commandlar onText ga ketadi
-
-    const chatId = msg.chat.id;
-    const st = getState(chatId);
-
-    // ── Yordam rejimi ──
-    if (st && st.mode === "help") {
-        clearState(chatId);
-
-        if (ADMIN_ID) {
-            await bot.sendMessage(
-                ADMIN_ID,
-                `📩 Yangi yordam so'rovi:\n👤 Ism: ${msg.from.first_name}\n🔗 Username: ${msg.from.username ? "@" + msg.from.username : "yo'q"}\n🆔 Chat ID: ${chatId}\n💬 Xabar:\n${msg.text}`
-            ).catch(e => console.error("Admin xabari yuborishda xato:", e));
+function sendMethodMenu(chatId) {
+    return bot.sendMessage(chatId, "🔢 Usulni tanlang:", {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "Gauss usuli",  callback_data: "gauss"  }],
+                [{ text: "Kramel usuli", callback_data: "cramer" }],
+                [{ text: "🔙 Orqaga",   callback_data: "back"   }]
+            ]
         }
+    }).catch(e => console.error(e));
+}
 
-        await bot.sendMessage(chatId, "✅ Xabaringiz adminga yuborildi!").catch(e => console.error(e));
-        return;
-    }
-
-    // ── Hech qanday aktiv holat yo'q — foydalanuvchini yo'naltir ──
-    if (!st || st.row === undefined || st.size === undefined) {
-        await bot.sendMessage(chatId,
-            "🤖 Botdan foydalanish uchun /start buyrug'ini bosing yoki quyidagi tugmani tanlang:",
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🚀 Boshlash", callback_data: "back" }]
-                    ]
-                }
-            }
-        ).catch(e => console.error(e));
-        return;
-    }
-
-    // ── Matrix kiritish rejimi ──
-
-    const expectedCols = st.size + 1;           // 3×3 → 4 ta, 4×4 → 5 ta
-    const parts = msg.text.split(",").map(v => Number(v.trim()));
-
-    if (parts.length !== expectedCols || parts.some(isNaN)) {
-        await bot.sendMessage(
-            chatId,
-            `❌ Xato! ${expectedCols} ta sonni vergul bilan kiriting.\nMasalan: ${Array.from({ length: expectedCols }, (_, i) => i + 1).join(", ")}`
-        ).catch(e => console.error(e));
-        return;
-    }
-
-    st.matrix.push(parts);
-    st.row++;
-
-    if (st.row < st.size) {
-        askRow(chatId);
-    } else {
-        // Yechim
-        if (st.size === 3 && st.method === "gauss")   gaussSolve3(chatId);
-        else if (st.size === 3 && st.method === "cramer") solveCramer3(chatId);
-        else if (st.size === 4 && st.method === "gauss")  gaussSolve4(chatId);
-        else if (st.size === 4 && st.method === "cramer") solveCramer4(chatId);
-    }
-});
-
-// ─────────────────────────────────────────────
-// ROW PROMPT
-// ─────────────────────────────────────────────
 function askRow(chatId) {
     const st = getState(chatId);
     if (!st) return;
-    const cols = Array.from({ length: st.size }, (_, i) => `a${i + 1}`).join(",") + ",b";
+    const cols = Array.from({ length: st.size }, (_, i) => `a${i + 1}`).concat("b").join(", ");
     bot.sendMessage(chatId, `📝 ${st.row + 1}-qatorni kiriting (${cols}):`).catch(e => console.error(e));
 }
 
-// ─────────────────────────────────────────────
-// FINISH  (Markdown xatosini oldini olish)
-// ─────────────────────────────────────────────
 function finish(chatId, txt) {
-    // Markdown rejimida xato bo'lsa plain text bilan qayta yuborish
     bot.sendMessage(chatId, txt, {
         parse_mode: "Markdown",
-        reply_markup: {
-            inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: "back" }]]
-        }
+        reply_markup: { inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: "back" }]] }
     }).catch(() => {
         bot.sendMessage(chatId, txt.replace(/[*_`[\]]/g, ""), {
-            reply_markup: {
-                inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: "back" }]]
-            }
+            reply_markup: { inline_keyboard: [[{ text: "🔙 Orqaga", callback_data: "back" }]] }
         }).catch(e => console.error("finish xatosi:", e));
     });
     clearState(chatId);
@@ -242,7 +270,7 @@ function finish(chatId, txt) {
 function formatNumber(num) {
     if (!isFinite(num)) return "∞";
     if (Math.abs(num - Math.round(num)) < 1e-9) return Math.round(num).toString();
-    return parseFloat(num.toFixed(4)).toString();   // ortiqcha nollarni olib tashlash
+    return parseFloat(num.toFixed(4)).toString();
 }
 
 // ─────────────────────────────────────────────
@@ -263,17 +291,16 @@ function printMatrix(A, text) {
 }
 
 // ─────────────────────────────────────────────
-// GAUSS – umumiy funksiya (3 va 4 uchun)
+// GAUSS — umumiy (3×3 va 4×4)
 // ─────────────────────────────────────────────
 function gaussSolveN(chatId) {
     const st = getState(chatId);
-    const A  = JSON.parse(JSON.stringify(st.matrix));
-    const n  = st.size;
-    let log  = "📐 *Gauss usuli yechimi*\n\n";
+    if (!st) return;
+    const A = JSON.parse(JSON.stringify(st.matrix));
+    const n = st.size;
+    let log = "📐 *Gauss usuli yechimi*\n\n";
 
     for (let i = 0; i < n; i++) {
-
-        // Qisman pivot (ustunning eng katta elementi bilan qator almashtirish)
         let maxRow = i;
         for (let k = i + 1; k < n; k++) {
             if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) maxRow = k;
@@ -302,7 +329,6 @@ function gaussSolveN(chatId) {
         }
     }
 
-    // Orqaga o'rin bosish (back-substitution)
     log += "🔄 *Orqaga o'rin bosish:*\n";
     for (let i = n - 1; i >= 0; i--) {
         for (let k = i - 1; k >= 0; k--) {
@@ -314,15 +340,11 @@ function gaussSolveN(chatId) {
 
     log += "\n✅ *Natija:*\n";
     for (let i = 0; i < n; i++) log += `x${i+1} = ${formatNumber(A[i][n])}\n`;
-
     finish(chatId, log);
 }
 
-function gaussSolve3(chatId) { gaussSolveN(chatId); }
-function gaussSolve4(chatId) { gaussSolveN(chatId); }
-
 // ─────────────────────────────────────────────
-// DETERMINANT – 3×3
+// DETERMINANT 3×3
 // ─────────────────────────────────────────────
 function det3(m) {
     return m[0][0] * (m[1][1]*m[2][2] - m[1][2]*m[2][1])
@@ -333,12 +355,9 @@ function det3(m) {
 function det3WithSteps(m) {
     const d = det3(m);
     let text = "Laplas (1-qator bo'yicha):\n";
-
     for (let i = 0; i < 3; i++) {
         const sub = [];
-        for (let r = 1; r < 3; r++) {
-            sub.push(m[r].filter((_, c) => c !== i));
-        }
+        for (let r = 1; r < 3; r++) sub.push(m[r].filter((_, c) => c !== i));
         const minor = sub[0][0]*sub[1][1] - sub[0][1]*sub[1][0];
         const sign  = i % 2 === 0 ? 1 : -1;
         const term  = sign * m[0][i] * minor;
@@ -349,7 +368,7 @@ function det3WithSteps(m) {
 }
 
 // ─────────────────────────────────────────────
-// DETERMINANT – 4×4
+// DETERMINANT 4×4
 // ─────────────────────────────────────────────
 function det4WithSteps(m) {
     let d    = 0;
@@ -359,9 +378,7 @@ function det4WithSteps(m) {
 
     for (let i = 0; i < 4; i++) {
         const sub = [];
-        for (let r = 1; r < 4; r++) {
-            sub.push(m[r].filter((_, c) => c !== i));
-        }
+        for (let r = 1; r < 4; r++) sub.push(m[r].filter((_, c) => c !== i));
         const minor = det3(sub);
         const sign  = i % 2 === 0 ? 1 : -1;
         const term  = sign * m[0][i] * minor;
@@ -373,14 +390,15 @@ function det4WithSteps(m) {
 }
 
 // ─────────────────────────────────────────────
-// CRAMER – umumiy funksiya
+// CRAMER — umumiy (3×3 va 4×4)
 // ─────────────────────────────────────────────
 function solveCramerN(chatId, detFn) {
     const st = getState(chatId);
-    const M  = st.matrix;
-    const n  = st.size;
-    const A  = M.map(r => r.slice(0, n));
-    const B  = M.map(r => r[n]);
+    if (!st) return;
+    const M = st.matrix;
+    const n = st.size;
+    const A = M.map(r => r.slice(0, n));
+    const B = M.map(r => r[n]);
 
     let text = "📐 *Cramer usuli (qadamlar bilan)*\n\n";
     text += "1️⃣ Asosiy determinant D:\n\n";
@@ -409,27 +427,12 @@ function solveCramerN(chatId, detFn) {
     finish(chatId, text);
 }
 
-function solveCramer3(chatId) { solveCramerN(chatId, det3WithSteps); }
-function solveCramer4(chatId) { solveCramerN(chatId, det4WithSteps); }
-
 // ─────────────────────────────────────────────
 // GLOBAL ERROR HANDLING
 // ─────────────────────────────────────────────
-bot.on("polling_error", (err) => {
-    console.error("Polling xatosi:", err.code, err.message);
-});
-
-bot.on("error", (err) => {
-    console.error("Bot xatosi:", err.message);
-});
-
-process.on("unhandledRejection", (reason) => {
-    console.error("Unhandled Rejection:", reason);
-});
-
-process.on("uncaughtException", (err) => {
-    console.error("Uncaught Exception:", err.message);
-    // Bot ishlashda davom etsin
-});
+bot.on("polling_error", (err) => console.error("Polling xatosi:", err.code, err.message));
+bot.on("error",         (err) => console.error("Bot xatosi:", err.message));
+process.on("unhandledRejection", (reason) => console.error("Unhandled Rejection:", reason));
+process.on("uncaughtException",  (err)    => console.error("Uncaught Exception:", err.message));
 
 console.log("✅ Bot ishga tushdi!");
